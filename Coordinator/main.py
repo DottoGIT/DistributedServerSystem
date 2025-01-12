@@ -57,7 +57,7 @@ def send_command_to_server(command, conn):
         response = conn.recv(1024).decode('utf-8')
         return response
     except Exception as e:
-        return "Server Unreachable"
+        return "Server Unreachable\n"
 
 #-------------------------------------------------------------------------------#
 #                              CLIENT COMMANDS                                  #
@@ -84,24 +84,61 @@ def list_command():
 
 def download_command(file_name):
     print(f"Command <download> recieved")
-
-    # Inform about active servers with file
+    file_size = 0
     response = f"Starting {file_name} download...\nServers that contain file:\n"
     client_conn.sendall(response.encode('utf-8'))
     client_conn.recv(1024).decode('utf-8')
 
     response = ""
+    server_response = ""
+    servers_with_file = []
     for i, server_connection in enumerate(server_connections):
-        if send_command_to_server(f"do_you_have {file_name}", server_connection) == "YES":
+        server_response = send_command_to_server(f"do_you_have {file_name}", server_connection).split()
+        if server_response[0] == "YES":
             response += f"{server_ips[i]}\n"
+            file_size = max(file_size, int(server_response[1]))
             send_command_to_server(f"connect_to_client", server_connection)
-    client_conn.sendall(response.encode('utf-8'))
+            servers_with_file.append(server_connection)
 
     if response == "":
+        response = "None"
+
+    client_conn.sendall(response.encode('utf-8'))
+    if response == "None":
         return
+    
+    print(f"Managing servers...")
 
     # Begin Downloading
-    print(f"Managing servers...")
+    downloading_status = [1 for s in servers_with_file]
+    offset = 1                          # Number where the file is currently on
+    closest_offset = file_size+1        # Number where is the closest readable for any server
+    while sum(downloading_status) > 0 and offset != file_size+1:
+        data_sent = False
+        for i, server in enumerate(servers_with_file):
+            response = send_command_to_server(f"send_fragment {file_name} {offset}", server).split()
+            if response[0] == "OK":
+                offset += int(response[1])
+                data_sent = True
+                break
+            elif response[0] == "NO":
+                if int(response[1]) < closest_offset:
+                    closest_offset = int(response[1])
+                    if int(response[1]) == (file_size + 1):
+                        downloading_status[i] = 0
+                        send_command_to_server("close_client_connection", server_connection)
+            else:
+                print("Internal Server Error, exiting")
+                offset = file_size
+                break
+        if data_sent == False:
+            offset = closest_offset
+            closest_offset = file_size+1
+
+    # Finish Downloading
+    for i in range(len(downloading_status)):
+        if downloading_status[i] != 0:
+            send_command_to_server("close_client_connection", servers_with_file[i])
 
     print(f"Download completed")
 
@@ -140,8 +177,8 @@ def main():
             help_command()
         elif data == "list":
             list_command()
-        elif len(data.lower().split()) == 2 and data.lower().split()[0] == "download":
-            download_command(data.lower().split(" ")[1])
+        elif len(data.split()) == 2 and data.split()[0] == "download":
+            download_command(data.split(" ")[1])
         elif data == "status":
             status_command()
         else:
